@@ -1,0 +1,109 @@
+import os
+import sys
+import requests
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin, urlparse
+
+# Web shell tespiti için yaygın zararlı komutlar
+default_suspicious_phrases = [
+    'eval(',
+    'base64_decode(',
+    'system(',
+    'exec(',
+    'shell_exec(',
+    'passthru(',
+    'popen(',
+    'proc_open(',
+    'preg_replace("/e/",',
+    'assert(',
+    'eval(base64_decode(',
+    'phpinfo(',
+    'system("wget',  # dışarıdan dosya indirme komutları
+    'shell_exec("curl',  # dışarıdan komut çalıştırma
+    'file_get_contents("http',  # uzak kaynaklara HTTP istekleri
+]
+
+# Komut satırından hedef URL'yi almak
+def get_target_url():
+    if len(sys.argv) < 2:
+        print("Hedef URL belirtilmedi.")
+        print("Kullanım: python webshell_scanner.py <target_url> <custom_wordlist (opsiyonel)>")
+        sys.exit(1)
+    return sys.argv[1]
+
+# Özelleştirilmiş kelime listesi (wordlist) yükleme
+def load_wordlist(wordlist_file):
+    if os.path.isfile(wordlist_file):
+        with open(wordlist_file, 'r') as file:
+            wordlist = [line.strip() for line in file.readlines()]
+        return wordlist
+    else:
+        print(f"Uyarı: Kelime listesi dosyası bulunamadı: {wordlist_file}. Varsayılan liste kullanılacak.")
+        return default_suspicious_phrases
+
+# Sayfa içeriğinde şüpheli komutları kontrol etme fonksiyonu
+def check_for_suspicious_code(page_content, suspicious_phrases):
+    for phrase in suspicious_phrases:
+        if phrase.lower() in page_content.lower():
+            return True, phrase
+    return False, None
+
+# URL'ye istek gönder ve içeriği al
+def fetch_page(url):
+    try:
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            return response.text
+        else:
+            print(f"Uyarı: URL'ye erişilemedi. HTTP Durum Kodu: {response.status_code} - {url}")
+            return None
+    except requests.exceptions.RequestException as e:
+        print(f"Bağlantı hatası: {e} - {url}")
+        return None
+
+# Siteyi tarama ve PHP dosyalarını bulma
+def crawl_site(base_url, suspicious_phrases, visited=set()):
+    print(f"Sitede tarama başlatılıyor: {base_url}")
+    to_visit = [base_url]
+    while to_visit:
+        current_url = to_visit.pop(0)
+
+        # Sayfada zaten tarandıysa atla
+        if current_url in visited:
+            continue
+        visited.add(current_url)
+
+        print(f"Taranıyor: {current_url}")
+        page_content = fetch_page(current_url)
+
+        if page_content:
+            # Şüpheli komutları kontrol et
+            found, phrase = check_for_suspicious_code(page_content, suspicious_phrases)
+            if found:
+                print(f"Uyarı: Şüpheli ifade '{phrase}' bulundu! - URL: {current_url}")
+
+            # Sayfadaki tüm linkleri bul
+            soup = BeautifulSoup(page_content, 'html.parser')
+            links = [a['href'] for a in soup.find_all('a', href=True)]
+
+            for link in links:
+                # Tam URL'yi oluştur
+                full_url = urljoin(current_url, link)
+                parsed_url = urlparse(full_url)
+
+                # Yalnızca PHP dosyaları
+                if parsed_url.path.endswith('.php') and full_url not in visited:
+                    to_visit.append(full_url)
+
+    print("Tarama tamamlandı.")
+
+# Ana fonksiyon çağrısı
+if __name__ == "__main__":
+    target_url = get_target_url()  # Hedef URL'yi al
+    wordlist_file = sys.argv[2] if len(sys.argv) > 2 else None
+
+    # Özelleştirilmiş kelime listesi yükle
+    suspicious_phrases = load_wordlist(wordlist_file)  # Eğer belirtilmişse custom wordlist'i yükle
+
+    # Siteyi taramaya başla
+    crawl_site(target_url, suspicious_phrases)
